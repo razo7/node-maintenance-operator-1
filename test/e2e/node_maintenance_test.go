@@ -35,8 +35,6 @@ const (
 	eventInterval         = time.Second * 10
 	timeout               = time.Second * 120
 	testDeployment        = "test-deployment"
-	// sometimes an event is emitted so quic that it is raced with the the current time which is
-	subtleDelay = time.Second * 1
 )
 
 var podLabel = map[string]string{"test": "drain"}
@@ -72,7 +70,7 @@ var _ = Describe("Starting Maintenance", func() {
 				controlPlaneNode = controlPlaneNodes[0]
 				objectName = fmt.Sprintf("test-1st-control-plane-%s", controlPlaneNode)
 				controPlaneMaintenance = getNodeMaintenance(objectName, controlPlaneNode)
-				startTime = time.Now().Add(-subtleDelay) // current time minus safety seconds
+				startTime = time.Now()
 				err = createCRIgnoreUnrelatedErrors(controPlaneMaintenance)
 			}
 		})
@@ -126,7 +124,7 @@ var _ = Describe("Starting Maintenance", func() {
 			objectName = fmt.Sprintf("test-2nd-control-plane-%s", controlPlaneNode)
 			nodeMaintenance := getNodeMaintenance(objectName, controlPlaneNode)
 
-			startTime = time.Now().Add(-subtleDelay) // current time minus safety seconds
+			startTime = time.Now()
 			err := createCRIgnoreUnrelatedErrors(nodeMaintenance)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(nmo.ErrorControlPlaneQuorumViolation, controlPlaneNode), "Unexpected error message")
@@ -139,7 +137,7 @@ var _ = Describe("Starting Maintenance", func() {
 			nodeName := "doesNotExist"
 			objectName = "test-unexisting"
 			nodeMaintenance := getNodeMaintenance(objectName, nodeName)
-			startTime = time.Now().Add(-subtleDelay) // current time minus safety seconds
+			startTime = time.Now()
 			err := createCRIgnoreUnrelatedErrors(nodeMaintenance)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf(nmo.ErrorNodeNotExists, nodeName)), "Unexpected error message")
@@ -155,7 +153,7 @@ var _ = Describe("Starting Maintenance", func() {
 		)
 
 		BeforeEach(func() {
-			startTime = time.Now().Add(-subtleDelay) // current time minus safety seconds
+			startTime = time.Now()
 			createTestDeployment()
 			maintenanceNodeName = getTestDeploymentNodeName()
 			nodeMaintenance = getNodeMaintenance(testWorkerMaintenance, maintenanceNodeName)
