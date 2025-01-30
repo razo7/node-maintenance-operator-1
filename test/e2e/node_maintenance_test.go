@@ -35,6 +35,8 @@ const (
 	eventInterval         = time.Second * 10
 	timeout               = time.Second * 120
 	testDeployment        = "test-deployment"
+	// sometimes an event is emitted so quic that it is raced with the the current time which is
+	subtleDelay = time.Second * 1
 )
 
 var podLabel = map[string]string{"test": "drain"}
@@ -45,6 +47,7 @@ var _ = Describe("Starting Maintenance", func() {
 		controlPlaneNodes, workers []string
 		objectName                 string
 		controPlaneMaintenance     *nmo.NodeMaintenance
+		startTime                  time.Time
 	)
 
 	BeforeEach(func() {
@@ -69,6 +72,7 @@ var _ = Describe("Starting Maintenance", func() {
 				controlPlaneNode = controlPlaneNodes[0]
 				objectName = fmt.Sprintf("test-1st-control-plane-%s", controlPlaneNode)
 				controPlaneMaintenance = getNodeMaintenance(objectName, controlPlaneNode)
+				startTime = time.Now().Add(-subtleDelay) // current time minus safety seconds
 				err = createCRIgnoreUnrelatedErrors(controPlaneMaintenance)
 			}
 		})
@@ -78,7 +82,7 @@ var _ = Describe("Starting Maintenance", func() {
 				Skip("cluster has less than 3 master/control-plane nodes and is to small for running this test")
 			}
 			Expect(err).ToNot(HaveOccurred())
-			verifyEvent(context.Background(), utils.EventReasonBeginMaintenance, objectName)
+			verifyEvent(context.Background(), utils.EventReasonBeginMaintenance, objectName, startTime)
 		})
 
 		It("should fail", func() {
@@ -90,7 +94,7 @@ var _ = Describe("Starting Maintenance", func() {
 			// on k8s the fake etcd-quorum-guard PDB should do as well
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(nmo.ErrorControlPlaneQuorumViolation, controlPlaneNode), "Unexpected error message")
-			verifyNoEvent(context.Background(), utils.EventReasonBeginMaintenance, objectName)
+			verifyNoEvent(context.Background(), utils.EventReasonBeginMaintenance, objectName, startTime)
 		})
 	})
 
@@ -122,10 +126,11 @@ var _ = Describe("Starting Maintenance", func() {
 			objectName = fmt.Sprintf("test-2nd-control-plane-%s", controlPlaneNode)
 			nodeMaintenance := getNodeMaintenance(objectName, controlPlaneNode)
 
+			startTime = time.Now().Add(-subtleDelay) // current time minus safety seconds
 			err := createCRIgnoreUnrelatedErrors(nodeMaintenance)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(nmo.ErrorControlPlaneQuorumViolation, controlPlaneNode), "Unexpected error message")
-			verifyNoEvent(context.Background(), utils.EventReasonBeginMaintenance, objectName)
+			verifyNoEvent(context.Background(), utils.EventReasonBeginMaintenance, objectName, startTime)
 		})
 	})
 
@@ -134,10 +139,11 @@ var _ = Describe("Starting Maintenance", func() {
 			nodeName := "doesNotExist"
 			objectName = "test-unexisting"
 			nodeMaintenance := getNodeMaintenance(objectName, nodeName)
+			startTime = time.Now().Add(-subtleDelay) // current time minus safety seconds
 			err := createCRIgnoreUnrelatedErrors(nodeMaintenance)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf(nmo.ErrorNodeNotExists, nodeName)), "Unexpected error message")
-			verifyNoEvent(context.Background(), utils.EventReasonBeginMaintenance, objectName)
+			verifyNoEvent(context.Background(), utils.EventReasonBeginMaintenance, objectName, startTime)
 		})
 	})
 
@@ -146,11 +152,10 @@ var _ = Describe("Starting Maintenance", func() {
 		var (
 			maintenanceNodeName string
 			nodeMaintenance     *nmo.NodeMaintenance
-			startTime           time.Time
 		)
 
 		BeforeEach(func() {
-			startTime = time.Now()
+			startTime = time.Now().Add(-subtleDelay) // current time minus safety seconds
 			createTestDeployment()
 			maintenanceNodeName = getTestDeploymentNodeName()
 			nodeMaintenance = getNodeMaintenance(testWorkerMaintenance, maintenanceNodeName)
@@ -172,8 +177,8 @@ var _ = Describe("Starting Maintenance", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(nmo.ErrorNodeNameUpdateForbidden), "Unexpected error message")
 
-			verifyEvent(context.Background(), utils.EventReasonBeginMaintenance, testWorkerMaintenance)
-			verifyEvent(context.Background(), utils.EventReasonSucceedMaintenance, testWorkerMaintenance)
+			verifyEvent(context.Background(), utils.EventReasonBeginMaintenance, testWorkerMaintenance, startTime)
+			verifyEvent(context.Background(), utils.EventReasonSucceedMaintenance, testWorkerMaintenance, startTime)
 
 			// check operator log showing it reconciled with fixed duration because of drain timeout
 			// it should be caused by the test deployment's termination graceperiod > drain timeout
@@ -216,14 +221,13 @@ var _ = Describe("Starting Maintenance", func() {
 				return true, nil
 			}, 60*time.Second, 10*time.Second).Should(BeTrue(), "node should be resetted")
 
-			verifyEvent(context.Background(), utils.EventReasonRemovedMaintenance, testWorkerMaintenance)
+			verifyEvent(context.Background(), utils.EventReasonRemovedMaintenance, testWorkerMaintenance, startTime)
 
 			By("verify lease was invalidated and there is at least one available replica")
 			isLeaseInvalidated(maintenanceNodeName)
 			waitForTestDeployment(1)
 
 		})
-
 	})
 })
 
@@ -253,14 +257,14 @@ func getNodes() ([]string, []string) {
 	return controlPlaneNodes, workers
 }
 
-func getNodeMaintenance(objectname, nodeName string) *nmo.NodeMaintenance {
+func getNodeMaintenance(name, nodeName string) *nmo.NodeMaintenance {
 	return &nmo.NodeMaintenance{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       maintenanceKind,
 			APIVersion: "nodemaintenance.medik8s.io/v1beta1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: objectname,
+			Name: name,
 		},
 		Spec: nmo.NodeMaintenanceSpec{
 			NodeName: nodeName,
@@ -461,8 +465,8 @@ func isLeaseInvalidated(nodeName string) {
 }
 
 // waitForEvent polls the filtered events and returns an error if it could not find the desired event
-// by its name and reason
-func waitForEvent(ctx context.Context, eventReason, eventIdentifier string) error {
+// by its name, reason and last occurrence
+func waitForEvent(ctx context.Context, eventReason, eventIdentifier string, beginTime time.Time) error {
 	// Wait for events with a timeout
 	return wait.PollUntilContextTimeout(ctx, retryInterval, timeout, true, func(ctx context.Context) (bool, error) {
 		events, err := KubeClient.CoreV1().Events("").List(ctx, metav1.ListOptions{
@@ -472,10 +476,12 @@ func waitForEvent(ctx context.Context, eventReason, eventIdentifier string) erro
 			return false, fmt.Errorf("Error listing events: %v", err)
 		}
 
-		// go over all nm CR events, and find an event that match the event reason and contains the desired name identifier
+		// go over all nm CR events, and find a recent event that match the event reason and contains the desired name identifier
 		for _, event := range events.Items {
 			if strings.Contains(event.Name, eventIdentifier) && event.Reason == eventReason {
-				return true, nil
+				if event.LastTimestamp.Time.After(beginTime) {
+					return true, nil
+				}
 			}
 		}
 		return false, nil
@@ -483,9 +489,9 @@ func waitForEvent(ctx context.Context, eventReason, eventIdentifier string) erro
 }
 
 // verifyEvent expects to find an event based on its reason and the identifier
-func verifyEvent(ctx context.Context, eventReason, eventIdentifier string) {
+func verifyEvent(ctx context.Context, eventReason, eventIdentifier string, beginTime time.Time) {
 	By(fmt.Sprintf("Verifying that event %s was created for %s nm CR", eventReason, eventIdentifier))
-	err := waitForEvent(ctx, eventReason, eventIdentifier)
+	err := waitForEvent(ctx, eventReason, eventIdentifier, beginTime)
 	if err != nil {
 		fmt.Printf("Error waiting for events: %v", err)
 	}
@@ -493,9 +499,9 @@ func verifyEvent(ctx context.Context, eventReason, eventIdentifier string) {
 }
 
 // verifyNoEvent expects to fail on finding an event based on its reason and the identifier
-func verifyNoEvent(ctx context.Context, eventReason, eventIdentifier string) {
+func verifyNoEvent(ctx context.Context, eventReason, eventIdentifier string, beginTime time.Time) {
 	By(fmt.Sprintf("Verifying that event %s was not created for %s nm CR", eventReason, eventIdentifier))
 	// check error as indication of missing event
-	Expect(waitForEvent(ctx, eventReason, eventIdentifier)).To(HaveOccurred(),
+	Expect(waitForEvent(ctx, eventReason, eventIdentifier, beginTime)).To(HaveOccurred(),
 		fmt.Sprintf("Event %s existed for %s nm CR", eventReason, eventIdentifier))
 }
