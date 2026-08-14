@@ -196,7 +196,7 @@ test-no-verify: go-verify manifests generate fmt fix-imports vet envtest ginkgo 
 	$(GINKGO) -r --keep-going --randomize-all --require-suite --vv --coverprofile cover.out ./internal/controller/... ./internal/webhook/... ./api/... ./pkg/...
 
 .PHONY: bundle-run
-bundle-run: operator-sdk ## Run bundle image. Default NS is "openshift-workload-availability", redefine OPERATOR_NAMESPACE to override it.
+bundle-run: operator-sdk create-ns ## Run bundle image. Default NS is "openshift-workload-availability", redefine OPERATOR_NAMESPACE to override it.
 	$(OPERATOR_SDK) -n $(OPERATOR_NAMESPACE) run bundle $(BUNDLE_IMG)
 
 .PHONY: bundle-run-update
@@ -208,6 +208,10 @@ bundle-run-update: operator-sdk ## Update bundle image.
 .PHONY: bundle-cleanup
 bundle-cleanup: operator-sdk ## Remove bundle installed via bundle-run
 	$(OPERATOR_SDK) -n $(OPERATOR_NAMESPACE) cleanup $(OPERATOR_NAME)
+
+.PHONY: create-ns
+create-ns: ## Create namespace
+	$(KUBECTL) get ns $(OPERATOR_NAMESPACE) 2>&1> /dev/null || $(KUBECTL) create ns $(OPERATOR_NAMESPACE)
 
 ##@ Bundle Creation Addition
 ## Some addition to bundle creation in the bundle
